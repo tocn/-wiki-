@@ -5,9 +5,6 @@ source: https://wiki.biligame.com/ys/Gcsim入门教程
 fetched_at: 2026-10-04T17:06:24+00:00
 ---
 
-MediaWiki:Timer
-
-12025/02/7 0:0:0本文上次更新
 ，请注意时效性**。**
 
 本文章为Ayka原创，未经作者允许，请勿擅自修改，转载请注明出处并附带链接。

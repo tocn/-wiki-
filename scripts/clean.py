@@ -28,6 +28,15 @@ DROP_SELECTORS = [
     ".navigation-not-searchable",  # 站尾导航
     ".mw-editsection",
     ".ys-collapse-explain",        # 「展开/折叠」UI 标签
+    # 隐藏容器:源站用来存前端脚本读取的数据,读者不可见。
+    # 典型如 #categoryData / #mapAreaData / #categoryDataExtension —— 内嵌交互地图
+    # 的标记 JSON(markTypeName / geojson / icon),若不剔除会灌入大量坐标与图标 URL。
+    ".hide",
+    ".shade",
+    # 内嵌交互地图应用本体(#map-div 包住 #onload / #app / #map-set)。
+    # 其内容是 Vue 组件模板({{item.markTypeName}} 一类),既非正文也无法在
+    # Markdown 中还原;源站以交互地图呈现,本镜像不收录地图,故整块剔除。
+    "#map-div",
 ]
 
 # 清理后仍需剔除的纯 UI 残留行
@@ -37,25 +46,53 @@ _WS = re.compile(r"[ \t\u00a0\u200b]+")
 _BLANKS = re.compile(r"\n{3,}")
 
 
+def _alive(el) -> bool:
+    """
+    节点是否仍挂在树上。
+
+    BeautifulSoup 的 decompose() 会连同后代一起移除,并把它们的 attrs 置为 None。
+    若在遍历中删掉父节点,列表里残留的后代引用就会变成空壳,再调用 .get() 会抛
+    AttributeError。所有剔除操作前都先过这道检查。
+    """
+    return el is not None and getattr(el, "attrs", None) is not None
+
+
+def _drop(elements) -> int:
+    """批量剔除节点,自动跳过已被祖先带走的空壳。返回实际剔除数。"""
+    n = 0
+    for el in elements:
+        if _alive(el):
+            el.decompose()
+            n += 1
+    return n
+
+
 def clean(html: str) -> str:
     """把 MediaWiki 渲染后的 HTML 转成干净 Markdown。"""
     soup = BeautifulSoup(html, "lxml")
     main = soup.select_one(".mw-parser-output") or soup
 
+    # 整页即数据页:正文直接以 JSON 开头(如 Map4 页面,通篇是地图标记 JSON)。
+    # 这类页面没有可定位的容器(JSON 落在顶层 <p>),只能按内容判定。
+    probe = main.get_text(" ", strip=True).lstrip()
+    if probe.startswith('{"') or probe.startswith('[{"') or probe.startswith('[{"data"'):
+        return ""
+
     for sel in DROP_SELECTORS:
-        for el in main.select(sel):
-            el.decompose()
+        _drop(main.select(sel))
+
+    # 内联 display:none 的节点读者同样看不到,一并剔除
+    # (先收集完再删,避免边遍历边改树)
+    _drop([el for el in main.find_all(style=True)
+           if "display:none" in (el.get("style") or "").replace(" ", "").replace("\n", "").lower()])
 
     # 面包屑所在的无 class 首层 div:通过 #bread-edit 已删,这里处理残留的兄弟面包屑
-    for el in main.find_all("div", recursive=False):
-        txt = el.get_text(" ", strip=True)
-        if "首页" in txt and len(txt) < 60:      # 「首页 > 角色 > 可莉」
-            el.decompose()
+    _drop([el for el in main.find_all("div", recursive=False)
+           if "首页" in el.get_text(" ", strip=True) and len(el.get_text(strip=True)) < 60])
 
     # 清掉不含文本、也无图片的空节点
-    for el in main.find_all(True):
-        if not el.get_text(strip=True) and el.name not in ("img", "br", "hr"):
-            el.decompose()
+    _drop([el for el in main.find_all(True)
+           if not el.get_text(strip=True) and el.name not in ("img", "br", "hr")])
 
     text = markdownify(str(main), heading_style="ATX", bullets="-", strip=["a", "img"])
 

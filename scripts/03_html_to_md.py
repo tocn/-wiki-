@@ -85,7 +85,18 @@ def main():
         for r in index:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    # 清理陈旧产物:规则收紧后,上一轮生成的文件可能已不该存在。
+    # 不做这一步,目录里会残留与 index 不一致的过期文件,冒充有效结果。
+    produced = {os.path.basename(r["file"]) for r in index}
+    stale = [f for f in os.listdir(MD_DIR)
+             if f.endswith(".md") and f not in produced]
+    for f in stale:
+        os.remove(os.path.join(MD_DIR, f))
+
     print(f"[完成] 转换 {ok} 篇,过短跳过 {skip} 篇,缺原始文件 {fail} 篇")
+    if stale:
+        print(f"       清理陈旧产物 {len(stale)} 篇: {', '.join(stale[:5])}"
+              + (" …" if len(stale) > 5 else ""))
     print(f"       产物目录: data/md/   索引: data/index.jsonl")
 
 

@@ -1,0 +1,17 @@
+# 强制字节保真:关闭一切换行符自动转换
+# 镜像项目需要与源站内容保持逐字节一致,任何 CRLF<->LF 转换都视为污染
+* -text
+
+# 明确标出文本类型(便于 git diff / 统计正常识别)
+*.txt   diff
+*.md    diff
+*.json  diff
+*.csv   diff
+*.tsv   diff
+*.xml   diff
+*.html  diff
+*.css   diff
+*.js    diff
+
+# 将来若引入大文件,走 LFS 而非直接入库
+# *.psd filter=lfs diff=lfs merge=lfs -text

@@ -71,6 +71,28 @@ def clean(html: str) -> str:
     return text.strip()
 
 
+# 非文本页面:机器数据与命名空间残留,不属于 wiki 正文
+JUNK_TITLE_PREFIXES = (
+    "Data:",      # 含全部 Data:Map* 地图点位,以及 Data:roleCompute/data 等 JSON 数据块
+    "Uesr:",      # 源站拼写错误的用户页
+    "Meta:",
+    "Weight:",
+    "Xp:",
+    "编辑教程:",
+    "旅行者酒馆:",
+)
+
+
+def is_junk_title(title: str) -> bool:
+    """判断标题是否属于「非 wiki 文本」页面,应予排除。"""
+    t = title.strip()
+    if t.startswith(JUNK_TITLE_PREFIXES):
+        return True
+    if "http" in t.lower():          # 被误建为条目的外链
+        return True
+    return False
+
+
 def safe_filename(title: str) -> str:
     """把页面标题转成 Windows 合法文件名。"""
     s = re.sub(r'[<>:"/\\|?*]', "_", title)

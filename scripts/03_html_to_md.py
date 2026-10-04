@@ -16,7 +16,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from clean import clean, safe_filename  # noqa: E402
+from clean import clean, safe_filename, is_junk_title  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(ROOT, "cache", "raw")
@@ -47,6 +47,9 @@ def main():
         if not r.get("has_content"):
             continue
         pid, title = r["pageid"], r["title"]
+        if is_junk_title(title):      # 非 wiki 文本(Data:/Uesr:/外链等),不产出
+            skip += 1
+            continue
         src = os.path.join(RAW_DIR, f"{pid}.html")
         if not os.path.exists(src):
             fail += 1

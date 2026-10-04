@@ -24,6 +24,9 @@ from datetime import datetime, timezone
 
 from scrapling.fetchers import Fetcher
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from clean import is_junk_title  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = "https://wiki.biligame.com/ys/api.php"
 PAGES = os.path.join(ROOT, "data", "pages.jsonl")
@@ -32,16 +35,15 @@ RAW_DIR = os.path.join(ROOT, "cache", "raw")
 LOG = os.path.join(ROOT, "data", "fetch_log.jsonl")
 
 DELAY = 0.8          # 请求间隔(秒):实测 0.6s 可稳定穿过 EdgeOne,WAF 留足余量
-EXCLUDE_PREFIX = "Data:Map"   # 地图点位数据,不属于文本内容
 
 
 def build_targets():
     rows = [json.loads(l) for l in open(PAGES, encoding="utf-8")]
-    keep = [r for r in rows if not r["title"].startswith(EXCLUDE_PREFIX)]
+    keep = [r for r in rows if not is_junk_title(r["title"])]
     with open(TARGETS, "w", encoding="utf-8") as f:
         for r in keep:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    print(f"[目标] 全量 {len(rows)} 条,排除 '{EXCLUDE_PREFIX}*' 后保留 {len(keep)} 条")
+    print(f"[目标] 全量 {len(rows)} 条,排除非文本页后保留 {len(keep)} 条")
     return keep
 
 

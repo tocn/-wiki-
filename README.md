@@ -17,17 +17,23 @@ BWIKI 原神站(<https://wiki.biligame.com/ys>)的**纯文本镜像**。
 ```
 data/
   pages.jsonl       # 阶段一:ns=0 全量清单(52,021 条,含地图点位)
-  targets.jsonl     # 阶段二:过滤后的抓取目标(19,663 条)
+  targets.jsonl     # 阶段二:过滤后的抓取目标(19,641 条)
   fetch_log.jsonl   # 阶段二:逐页抓取记录(pageid/状态/字节数/时间)
-  md/               # ★ 最终交付物:清洗后的 Markdown,每页一个文件
-  index.jsonl       # pageid <-> 标题 <-> 文件 映射
+  categories.jsonl  # 阶段四:每条的源站分类
+  md/               # ★ 最终交付物:按分类归档的 Markdown
+    <大类>/<标题>.md
+  index.jsonl       # pageid <-> 标题 <-> 文件 <-> 分类 映射
 cache/
   raw/              # 原始渲染 HTML(体积大,不入库,可随时重跑生成)
+  orphan/           # 落单产物(未删除,留待人工核对)
 scripts/
-  01_list_pages.py    # 枚举 ns=0 全部条目
-  02_fetch_content.py # 批量抓取渲染 HTML(限速 + 断点续跑)
-  03_html_to_md.py    # 清洗并转换为 Markdown
-  clean.py            # 清洗模块(HTML -> Markdown)
+  01_list_pages.py          # 枚举 ns=0 全部条目
+  02_fetch_content.py       # 批量抓取渲染 HTML(限速 + 断点续跑)
+  03_html_to_md.py          # 清洗转换,并直接写入分类目录(并行)
+  04_fetch_categories.py    # 获取源站分类(50 标题/请求)
+  05_report_categories.py   # 分类诊断(只读)
+  clean.py                  # 清洗模块(HTML -> Markdown)
+  taxonomy.py               # 分类法:源站分类 -> 归档大类 的映射表
 ```
 
 ## 管线用法
@@ -35,12 +41,50 @@ scripts/
 ```bash
 PY="C:/Users/admin/.workbuddy/binaries/python/envs/scrapling/Scripts/python.exe"
 
-$PY scripts/01_list_pages.py          # 1. 枚举条目
-$PY scripts/02_fetch_content.py       # 2. 抓取(可重复执行以续跑;--limit N 试点)
-$PY scripts/03_html_to_md.py          # 3. 转换为 Markdown
+$PY scripts/01_list_pages.py            # 1. 枚举条目
+$PY scripts/02_fetch_content.py         # 2. 抓取(可重复执行以续跑;--limit N 试点)
+$PY scripts/04_fetch_categories.py      # 3. 获取源站分类(可先于转换)
+$PY scripts/03_html_to_md.py            # 4. 清洗转换 -> data/md/<大类>/ (并行)
+$PY scripts/05_report_categories.py     # 5. 分类诊断:覆盖率、判定来源、一致性校验
 ```
 
-三个阶段都可重复执行:阶段二依据 `fetch_log.jsonl` 跳过已完成页,阶段三整体重算。
+各阶段均可重复执行:阶段二依据 `fetch_log.jsonl` 续跑;阶段四依据 `categories.jsonl` 续跑;
+阶段三整体重算(并行,数千篇约数分钟)。
+
+**阶段三直接写入分类目录**,不产出「扁平中间态」。早期版本先写扁平、再由另一阶段移动,
+结果同一篇文章可能同时存在于旧分类目录与扁平位置,移动时顾此失彼、遗留重复副本。
+一个文件只应有一个家。非文本页与落单文件均不会被删除,后者移入 `cache/orphan/` 待核对。
+
+## 分类体系
+
+归档**以源站的 MediaWiki 分类为依据**,而非本项目自行划分 —— 分类是站点编者定义的归属。
+`taxonomy.py` 中的映射表把源站分类收敛成 12 个可浏览大类,避免目录名冗余与目录数膨胀。
+
+| 大类 | 收纳的源站分类举例 |
+|---|---|
+| 角色 | 角色、角色攻略、命之座、角色语音、衣装获取 |
+| 武器 | 武器、武器获取、武器突破素材 |
+| 圣遗物 | 圣遗物、圣遗物套装 |
+| 敌人 | 怪物、BOSS、首领、秘境、野生生物 |
+| 任务 | 任务、魔神任务、传说任务、世界任务、邀约事件、部族纪闻 |
+| 活动 | 活动、版本活动、联动活动、热点事件、游逸旅闻 |
+| 道具材料 | 道具、材料、消耗品、食物、锻造图纸、特产、各区域特产 |
+| 摆设家园 | 摆设、摆设套装、家具、家园、大厅设施 |
+| 卡牌 | 卡牌、卡牌/词条解释 |
+| 装扮 | 奇偶装扮、单件装扮、装扮套装、名片、头像、风之翼、武器外观 |
+| 攻略 | 攻略、机制攻略、探索攻略、配队攻略、实测体验、考究攻略 |
+| 版本专题 | 专题、版本更新、前瞻直播 |
+| NPC | NPC、NPC-Patch、NPC-Stat |
+| 官方周边 | 官方视频、相关爆料、官方贺图、专辑、礼包、术语 |
+| 未分类 | 源站未给内容分类,且标题关键词未命中兜底 |
+
+**两条设计约定:**
+
+1. **维护性分类不参与归档**(`正在计时的页面`、`待审核`、`含有受损文件链接的页面`、
+   `含有嵌入地图的页面` 等)。它们是站点质检标记,不代表内容归属。
+2. **判定来源可审计**。`index.jsonl` 的 `category_source` 字段记录每篇的判定依据:
+   `wiki` = 依据源站分类(权威);`title` = 源站分类缺位时按标题关键词兜底;
+   `none` = 仍无法判定,归入「未分类」。用 `--report` 可查看覆盖率与未映射分类。
 
 ## 范围说明
 

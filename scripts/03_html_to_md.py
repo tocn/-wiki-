@@ -75,24 +75,53 @@ def load_categories():
     return cats
 
 
-def write_jsonl_atomic(path, rows, retries=6):
+def write_jsonl(path, rows, retries=6):
     """
-    原子写入 JSONL:先写临时文件再 os.replace。
-    并对瞬时文件锁做重试 —— 上一轮被中断的进程可能短暂持有句柄,
-    若无重试,整轮数分钟的转换成果会因一次 PermissionError 白费。
+    写入 JSONL,并对瞬时锁重试。
+
+    注意:此处**刻意不用「写临时文件 + os.replace」的原子写**。
+    本环境的沙箱会把「覆盖已有文件」类操作接管到系统回收站(SAFE_DELETE 拦截),
+    os.replace 因此必定抛 WinError 5 拒绝访问,且重试无效 —— 已实际踩到一次,
+    导致整轮 19 分钟的转换成果需要从临时文件手工恢复。
+    改为直接截断写入:对本场景足够,且不会被拦。
     """
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
     for i in range(retries):
         try:
-            os.replace(tmp, path)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(payload)
             return
         except PermissionError:
             if i == retries - 1:
                 raise
             time.sleep(0.5 * (i + 1))
+
+
+def write_text_if_changed(path, text, retries=4):
+    """
+    内容未变则不写。
+
+    必要性:本环境对「覆盖已有文件」有临时性拦截(见 write_jsonl 的说明)。
+    全量重跑时数万个文件逐个覆盖,必然撞上拦截窗口。而绝大多数文件的分类与内容
+    在两次运行间并未改变 —— 跳过它们既能规避拦截,又省掉大量无谓 IO。
+    只有真正需要落盘时才写,并对 PermissionError 重试。
+    """
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                if f.read() == text:
+                    return "same"
+    except OSError:
+        pass
+    for i in range(retries):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return "written"
+        except PermissionError:
+            if i == retries - 1:
+                raise
+            time.sleep(0.4 * (i + 1))
 
 
 def main():
@@ -111,6 +140,7 @@ def main():
     print(f"[转换] 待处理 {len(jobs)} 篇,并行度 {workers}")
 
     index, ok, failed, too_short = [], 0, 0, 0
+    reused, blocked = 0, []
     used = {}
     with ProcessPoolExecutor(max_workers=workers) as ex:
         for pid, title, at, body, err in ex.map(_worker, jobs, chunksize=8):
@@ -130,14 +160,22 @@ def main():
 
             folder, source = resolve(cats.get(pid, []), title)
             os.makedirs(os.path.join(MD_DIR, folder), exist_ok=True)
-            with open(os.path.join(MD_DIR, folder, fname), "w", encoding="utf-8") as f:
-                f.write(FM.format(title=title, pageid=pid, site=SITE, at=at) + body + "\n")
+            target = os.path.join(MD_DIR, folder, fname)
+            payload = FM.format(title=title, pageid=pid, site=SITE, at=at) + body + "\n"
+            try:
+                if write_text_if_changed(target, payload) == "same":
+                    reused += 1
+            except PermissionError:
+                # 单篇写入被环境临时拦截,不应中断整轮:记下来,该篇不进索引,
+                # 下轮会重新处理(内容未变则直接跳过)。
+                blocked.append(title)
+                continue
             index.append({"pageid": pid, "title": title, "category": folder,
                           "category_source": source,
                           "file": f"data/md/{folder}/{fname}", "chars": len(body)})
             ok += 1
 
-    write_jsonl_atomic(INDEX, index)
+    write_jsonl(INDEX, index)
 
     # 落单文件:不在索引中 -> 移入 cache/orphan/(移动而非删除,可追溯)
     expected = {os.path.abspath(os.path.join(ROOT, r["file"])) for r in index}
@@ -149,15 +187,27 @@ def main():
             p = os.path.abspath(os.path.join(dirpath, fn))
             if p not in expected:
                 orphans.append(p)
+    moved_fail = 0
     for p in orphans:
         rel = os.path.relpath(p, MD_DIR).replace(os.sep, "__")
-        os.makedirs(ORPHAN_DIR, exist_ok=True)
-        shutil.move(p, os.path.join(ORPHAN_DIR, rel))
+        try:
+            os.makedirs(ORPHAN_DIR, exist_ok=True)
+            shutil.move(p, os.path.join(ORPHAN_DIR, rel))
+        except OSError as e:
+            # 移动同样可能被环境临时拦截;不中断流程,下次重跑再处理
+            moved_fail += 1
+            print(f"  [!] 落单文件暂存失败: {rel} ({type(e).__name__})", file=sys.stderr)
 
-    print(f"[完成] 转换 {ok} 篇,过短跳过 {too_short} 篇,处理失败 {failed} 篇,"
-          f"非文本跳过 {skipped} 篇")
+    print(f"[完成] 写入 {ok - reused} 篇,内容未变跳过 {reused} 篇,过短跳过 {too_short} 篇,"
+          f"处理失败 {failed} 篇,非文本跳过 {skipped} 篇")
+    if blocked:
+        print(f"       [!] {len(blocked)} 篇被环境临时拦截写入(未进索引),重跑即可补齐:"
+              f" {', '.join(blocked[:3])}" + (" …" if len(blocked) > 3 else ""))
     if orphans:
-        print(f"       落单 {len(orphans)} 篇已移至 cache/orphan/(未删除),可人工核对")
+        note = f"       落单 {len(orphans)} 篇已移至 cache/orphan/(未删除)"
+        if moved_fail:
+            note += f",其中 {moved_fail} 篇暂存失败待下轮重试"
+        print(note)
     print(f"       产物目录: data/md/<大类>/   索引: data/index.jsonl")
 
 

@@ -29,7 +29,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clean import clean, safe_filename, is_junk_title  # noqa: E402
-from taxonomy import resolve  # noqa: E402
+from taxonomy import resolve_with_inherit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(ROOT, "cache", "raw")
@@ -66,13 +66,15 @@ def _worker(job):
 
 
 def load_categories():
-    cats = {}
+    """返回 (pageid -> 分类, 标题 -> 分类)。后者用于子页面继承父页面分类。"""
+    cats, by_title = {}, {}
     if os.path.exists(CATS):
         for l in open(CATS, encoding="utf-8"):
             if l.strip():
                 r = json.loads(l)
                 cats[r["pageid"]] = r["categories"]
-    return cats
+                by_title[r["title"]] = r["categories"]
+    return cats, by_title
 
 
 def write_jsonl(path, rows, retries=6):
@@ -126,7 +128,7 @@ def write_text_if_changed(path, text, retries=4):
 
 def main():
     os.makedirs(MD_DIR, exist_ok=True)
-    cats = load_categories()
+    cats, title2cat = load_categories()
     recs = [json.loads(l) for l in open(LOG, encoding="utf-8") if l.strip()]
 
     jobs, skipped = [], 0
@@ -158,7 +160,7 @@ def main():
                 fname = f"{base}__{pid}.md"
             used[fname] = pid
 
-            folder, source = resolve(cats.get(pid, []), title)
+            folder, source = resolve_with_inherit(cats, title2cat, pid, title)
             os.makedirs(os.path.join(MD_DIR, folder), exist_ok=True)
             target = os.path.join(MD_DIR, folder, fname)
             payload = FM.format(title=title, pageid=pid, site=SITE, at=at) + body + "\n"

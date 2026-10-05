@@ -119,11 +119,28 @@ def content_categories(cats):
 # 剔除维护分类后就没有内容归属了。此类页面按标题关键词兜底比丢进「未分类」可用。
 # 只收录高精度关键词,宁可漏判不做误判;命中结果会在 index 中标记来源为 title。
 TITLE_HINTS = (
-    ("攻略", "攻略"),
-    ("语音", "角色"),
-    ("食谱", "道具材料"),
+    # 长词优先,避免「攻略」被「角色攻略」类词抢占
+    ("攻略", "攻略"), ("心得", "攻略"), ("指南", "攻略"), ("教学", "攻略"),
+    ("配队", "攻略"), ("阵容", "攻略"), ("挑战", "攻略"), ("计算器", "攻略"),
+    ("教程", "教程"),
     ("圣遗物", "圣遗物"),
+    ("武器", "武器"),
+    ("怪物", "敌人"), ("敌人", "敌人"), ("魔物", "敌人"),
+    ("任务", "任务"),
+    ("活动", "活动"),
+    ("角色", "角色"),
+    ("道具", "道具材料"), ("材料", "道具材料"),
 )
+
+# 站点自运维/元页面:是 wiki 文本,但不是游戏内容,单独归类以便与正文区分。
+SITE_MAINT = "站点维护"
+SITE_MAINT_PREFIXES = ("沙盒/",)
+SITE_MAINT_KEYWORDS = ("测试", "需要内容", "WIKI建设", "反馈", "审核情况", "编辑工具", "可视化编辑")
+# 精确匹配的站点页(短标题,用关键词会误伤,故按整名匹配)
+SITE_MAINT_TITLES = {
+    "首页", "沙盒", "沙盒c", "沙盒m", "创建", "杂项", "画廊",
+    "待审核", "未实装", "BUG", "Feedback", "WIKI站内导航", "特殊说明",
+}
 
 
 def folder_for(cats):
@@ -135,23 +152,41 @@ def folder_for(cats):
 
 
 def folder_by_title(title):
-    """源站分类缺位时,按标题关键词兜底判定;无命中返回 None。"""
+    """标题兜底:先判站点维护,再按内容关键词;无命中返回 None。"""
+    t = title or ""
+    if t in SITE_MAINT_TITLES:
+        return SITE_MAINT
+    if t.startswith(SITE_MAINT_PREFIXES):
+        return SITE_MAINT
+    for kw in SITE_MAINT_KEYWORDS:
+        if kw in t:
+            return SITE_MAINT
     for kw, folder in TITLE_HINTS:
-        if kw in (title or ""):
+        if kw in t:
             return folder
     return None
 
 
-def resolve(cats, title):
+def resolve(cats, title, parent_cats=None, parent_title=None):
     """
     综合判定归档大类。返回 (folder, source):
-      source = "wiki"  依据源站分类(权威)
-               "title" 依据标题关键词兜底
-               "none"  仍无法判定,归入未分类
+      source = "wiki"      依据源站分类(权威)
+               "parent"    依据父页面(索引页映射,或继承父页面分类)
+               "title"     标题关键词兜底
+               "none"      仍无法判定,归入未分类
+
+    parent_cats:  子页面父页面的分类
+    parent_title: 子页面的父页面标题,用于查 PARENT_HINTS(索引页映射)
     """
     f = folder_for(cats)
     if f:
         return f, "wiki"
+    if parent_title and parent_title in PARENT_HINTS:
+        return PARENT_HINTS[parent_title], "parent"
+    if parent_cats:
+        f = folder_for(parent_cats)
+        if f:
+            return f, "parent"
     f = folder_by_title(title)
     if f:
         return f, "title"
@@ -162,8 +197,39 @@ def folder_or_unclassified(cats):
     return folder_for(cats) or UNCLASSIFIED
 
 
-def coverage(index_rows, cats_by_page):
+# 索引页(父页面)映射。
+# 有一批子页面在源站自身无分类,且其父页面也无可用分类(只有「需要帮助」或空),
+# 导致继承规则失效。这些父页面本身是明确的索引页,语义无歧义,直接按标题指定归属。
+PARENT_HINTS = {
+    "幻想真境剧诗": "活动", "千星奇域": "活动", "豪斗旅纪": "活动", "小游戏": "活动",
+    "NPC图鉴": "NPC",
+    "万国诸卷拾遗": "道具材料",
+    "卡牌历史": "卡牌", "猫尾酒馆": "卡牌",
+    "渊月螺旋": "敌人", "深月螺旋": "敌人", "幽境危战": "敌人", "秘境": "敌人",
+    "声望": "任务",
+    "韧性力学": "攻略", "向导笔记": "攻略", "元素能量学": "攻略",
+    "元素附着论": "攻略", "北陆图书馆": "攻略",
+    "快速跳转小工具": "站点维护", "帮助": "站点维护",
+}
+
+
+def parent_of(title):
+    """子页面的父页面标题;顶层页面返回 None。"""
+    t = title or ""
+    return t.rsplit("/", 1)[0] if "/" in t else None
+
+
+def resolve_with_inherit(cats_by_page, title2cat, pageid, title):
+    """带父页面继承的判定封装。"""
+    pt = parent_of(title)
+    pc = title2cat.get(pt) if pt else None
+    return resolve(cats_by_page.get(pageid, []), title,
+                   parent_cats=pc, parent_title=pt)
+
+
+def coverage(index_rows, cats_by_page, title2cat=None):
     """统计映射覆盖率与未映射分类,用于验证分类法完备性。"""
+    title2cat = title2cat or {}
     freq = Counter()
     for r in index_rows:
         for c in content_categories(cats_by_page.get(r["pageid"], [])):
@@ -174,7 +240,7 @@ def coverage(index_rows, cats_by_page):
     buckets = Counter()
     sources = Counter()
     for r in index_rows:
-        folder, src = resolve(cats_by_page.get(r["pageid"], []), r.get("title", ""))
+        folder, src = resolve_with_inherit(cats_by_page, title2cat, r["pageid"], r.get("title", ""))
         buckets[folder] += 1
         sources[src] += 1
     return {
